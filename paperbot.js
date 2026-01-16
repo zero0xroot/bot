@@ -3,15 +3,24 @@ import fs from "fs";
 
 /* ================= CONFIG ================= */
 
-const POLL_MS = 15000; // 15 seconds
-const CSV_FILE = "btc_15m_paper_log.csv";
+const POLL_MS = 5000;
+const CSV_FILE = "pnl.csv";
+
+const ENTRY_LADDERS = [
+  { up: 0.30, down: 0.70 },
+  { up: 0.32, down: 0.68 },
+  { up: 0.35, down: 0.65 }
+];
+
+const PROFIT_EXIT = 0.85;
+const TIME_STOP_LOSS = -0.05;
 
 /* ================= CSV INIT ================= */
 
 if (!fs.existsSync(CSV_FILE)) {
   fs.writeFileSync(
     CSV_FILE,
-    "timestamp,market_id,up_price,down_price,expiry\n"
+    "timestamp,market_id,entry_up,entry_down,exit_reason,exit_price,pnl\n"
   );
 }
 
@@ -21,6 +30,12 @@ const api = axios.create({
   baseURL: "https://clob.polymarket.com"
 });
 
+/* ================= STATE ================= */
+
+let currentMarketId = null;
+let candleExpiry = null;
+let position = null;
+
 /* ================= HELPERS ================= */
 
 async function fetchCurrentBTC15mMarket() {
@@ -28,7 +43,6 @@ async function fetchCurrentBTC15mMarket() {
     "/markets?slug=bitcoin-up-or-down-15-minutes"
   );
 
-  // Polymarket returns newest first for slug queries
   const market = Array.isArray(res.data)
     ? res.data[0]
     : res.data?.markets?.[0];
@@ -39,33 +53,85 @@ async function fetchCurrentBTC15mMarket() {
     id: market.id,
     up: parseFloat(market.outcomes[0].price),
     down: parseFloat(market.outcomes[1].price),
-    expiry: market.expiry
+    expiry: new Date(market.expiry).getTime()
   };
+}
+
+function logTrade(marketId, entryUp, entryDown, reason, price, pnl) {
+  fs.appendFileSync(
+    CSV_FILE,
+    `${new Date().toISOString()},${marketId},${entryUp},${entryDown},${reason},${price},${pnl.toFixed(4)}\n`
+  );
 }
 
 /* ================= CORE LOOP ================= */
 
 async function loop() {
   try {
-    const market = await fetchCurrentBTC15mMarket();
-    if (!market) return;
+    const m = await fetchCurrentBTC15mMarket();
+    if (!m) return;
 
-    const row = [
-      new Date().toISOString(),
-      market.id,
-      market.up,
-      market.down,
-      market.expiry
-    ].join(",");
+    /* ===== NEW CANDLE ===== */
+    if (m.id !== currentMarketId) {
+      if (position) {
+        logTrade(
+          currentMarketId,
+          position.entryUp,
+          position.entryDown,
+          "TIME_STOP",
+          0,
+          TIME_STOP_LOSS
+        );
+        position = null;
+      }
 
-    fs.appendFileSync(CSV_FILE, row + "\n");
+      currentMarketId = m.id;
+      candleExpiry = m.expiry;
+      console.log("NEW 15M CANDLE", currentMarketId);
+    }
 
-    console.log(
-      "LOGGED",
-      market.id,
-      "UP:", market.up,
-      "DOWN:", market.down
-    );
+    /* ===== ENTRY ===== */
+    if (!position) {
+      for (const l of ENTRY_LADDERS) {
+        if (m.up <= l.up && m.down >= l.down) {
+          position = {
+            entryUp: m.up,
+            entryDown: m.down
+          };
+          console.log("PAPER ENTRY", position);
+          return;
+        }
+      }
+    }
+
+    /* ===== EXIT ===== */
+    if (position) {
+      if (m.up >= PROFIT_EXIT) {
+        const pnl = (m.up - position.entryUp) / position.entryUp;
+        logTrade(currentMarketId, position.entryUp, position.entryDown, "UP_EXIT", m.up, pnl);
+        position = null;
+        return;
+      }
+
+      if (m.down >= PROFIT_EXIT) {
+        const pnl = (m.down - position.entryDown) / position.entryDown;
+        logTrade(currentMarketId, position.entryUp, position.entryDown, "DOWN_EXIT", m.down, pnl);
+        position = null;
+        return;
+      }
+
+      if (Date.now() >= candleExpiry) {
+        logTrade(
+          currentMarketId,
+          position.entryUp,
+          position.entryDown,
+          "TIME_STOP",
+          0,
+          TIME_STOP_LOSS
+        );
+        position = null;
+      }
+    }
   } catch (e) {
     console.error("ERROR:", e.message);
   }
@@ -73,5 +139,5 @@ async function loop() {
 
 /* ================= START ================= */
 
-console.log("BTC 15-MIN PAPER LOGGER STARTED");
+console.log("BTC 15-MIN PAPER STRATEGY BOT STARTED");
 setInterval(loop, POLL_MS);
