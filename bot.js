@@ -137,6 +137,17 @@ async function loop() {
   }
 }
 
+import http from "http";
+
+const PORT = process.env.PORT || 10000;
+
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("Bot running");
+}).listen(PORT, "0.0.0.0", () => {
+  console.log("HTTP keepalive server on port", PORT);
+});
+
 /* ================= START ================= */
 
 console.log("BTC 15-MIN PAPER STRATEGY BOT STARTED");
