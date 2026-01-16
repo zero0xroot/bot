@@ -197,3 +197,4 @@ async function loop() {
 
 console.log("PROPER BTC 15-MIN PAPER BOT STARTED");
 setInterval(loop, POLL_MS);
+console.log("MARKETS RESPONSE TYPE:", typeof res.data, Object.keys(res.data || {}));
