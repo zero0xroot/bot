@@ -1,14 +1,12 @@
 import axios from "axios";
 import fs from "fs";
-import dotenv from "dotenv";
-dotenv.config();
 
 /* =====================================================
    CONFIG
 ===================================================== */
 
-const MARKET_ID = process.env.MARKET_ID;
-const RUN_DURATION_HOURS = 24;
+const RUN_HOURS = 24;
+const POLL_MS = 5000;
 
 const ENTRY_LADDERS = [
   { up: 0.30, down: 0.70 },
@@ -16,27 +14,27 @@ const ENTRY_LADDERS = [
   { up: 0.35, down: 0.65 }
 ];
 
-const STAKE_PER_SIDE = 1;
 const PROFIT_EXIT = 0.85;
-const TIME_STOP_MINUTES = 7;
-const FORCE_EXIT_MINUTES = 2;
-const POLL_INTERVAL_MS = 5000;
+const TIME_STOP_MIN = 7;
+const FORCE_EXIT_MIN = 2;
 
 /* =====================================================
    STATE
 ===================================================== */
 
+let activeMarketId = null;
+let activeExpiry = null;
 let position = null;
 let startTime = Date.now();
 
 /* =====================================================
-   CSV SETUP
+   CSV
 ===================================================== */
 
-const csvFile = "pnl.csv";
+const CSV = "pnl.csv";
 fs.writeFileSync(
-  csvFile,
-  "timestamp,entry_up,entry_down,exit_side,exit_price,pnl\n"
+  CSV,
+  "timestamp,market_id,entry_up,entry_down,exit_reason,exit_price,pnl\n"
 );
 
 /* =====================================================
@@ -47,31 +45,47 @@ const api = axios.create({
   baseURL: "https://clob.polymarket.com"
 });
 
-async function getMarket() {
-  const res = await api.get(`/markets/${MARKET_ID}`);
+/* =====================================================
+   HELPERS
+===================================================== */
+
+function minutes(ms) {
+  return ms / 60000;
+}
+
+async function fetchActiveBTC15mMarket() {
+  const res = await api.get("/markets");
+  const now = Date.now();
+
+  const markets = res.data
+    .filter(m =>
+      m.active &&
+      m.question?.toLowerCase().includes("bitcoin") &&
+      m.question?.includes("15")
+    )
+    .map(m => ({
+      id: m.id,
+      expiry: new Date(m.expiry).getTime()
+    }))
+    .filter(m => m.expiry > now)
+    .sort((a, b) => a.expiry - b.expiry);
+
+  return markets[0] || null;
+}
+
+async function getPrices(marketId) {
+  const res = await api.get(`/markets/${marketId}`);
   return {
     up: parseFloat(res.data.outcomes[0].price),
     down: parseFloat(res.data.outcomes[1].price),
-    expiry: new Date(res.data.expiry)
+    expiry: new Date(res.data.expiry).getTime()
   };
 }
 
-/* =====================================================
-   UTILS
-===================================================== */
-
-function minutesSince(ts) {
-  return (Date.now() - ts) / 60000;
-}
-
-function minutesToExpiry(expiry) {
-  return (expiry.getTime() - Date.now()) / 60000;
-}
-
-function logTrade(entryUp, entryDown, exitSide, exitPrice, pnl) {
+function logTrade(marketId, entryUp, entryDown, reason, price, pnl) {
   fs.appendFileSync(
-    csvFile,
-    `${new Date().toISOString()},${entryUp},${entryDown},${exitSide},${exitPrice},${pnl.toFixed(4)}\n`
+    CSV,
+    `${new Date().toISOString()},${marketId},${entryUp},${entryDown},${reason},${price},${pnl.toFixed(4)}\n`
   );
 }
 
@@ -79,22 +93,43 @@ function logTrade(entryUp, entryDown, exitSide, exitPrice, pnl) {
    CORE LOOP
 ===================================================== */
 
-async function botLoop() {
+async function loop() {
   try {
-    if ((Date.now() - startTime) > RUN_DURATION_HOURS * 3600000) {
-      console.log("24 HOURS COMPLETE — STOPPING BOT");
+    if (minutes(Date.now() - startTime) >= RUN_HOURS * 60) {
+      console.log("24 HOURS COMPLETE — STOPPING");
       process.exit(0);
     }
 
-    const m = await getMarket();
+    const market = await fetchActiveBTC15mMarket();
+    if (!market) return;
+
+    // MARKET ROLL
+    if (market.id !== activeMarketId) {
+      if (position) {
+        logTrade(
+          activeMarketId,
+          position.entryUp,
+          position.entryDown,
+          "MARKET_ROLL",
+          0,
+          -0.05
+        );
+        position = null;
+      }
+      activeMarketId = market.id;
+      activeExpiry = market.expiry;
+      console.log("NEW MARKET", activeMarketId);
+    }
+
+    const prices = await getPrices(activeMarketId);
 
     /* ===== ENTRY ===== */
     if (!position) {
       for (const l of ENTRY_LADDERS) {
-        if (m.up <= l.up && m.down >= l.down) {
+        if (prices.up <= l.up && prices.down >= l.down) {
           position = {
-            entryUp: m.up,
-            entryDown: m.down,
+            entryUp: prices.up,
+            entryDown: prices.down,
             entryTime: Date.now()
           };
           console.log("PAPER ENTRY", position);
@@ -105,43 +140,35 @@ async function botLoop() {
 
     /* ===== MANAGEMENT ===== */
     if (position) {
-      // PROFIT EXIT
-      if (m.up >= PROFIT_EXIT) {
-        const pnl = (PROFIT_EXIT - position.entryUp) / position.entryUp - 1;
-        logTrade(position.entryUp, position.entryDown, "UP", m.up, pnl);
-        console.log("PROFIT EXIT UP", pnl);
+      if (prices.up >= PROFIT_EXIT) {
+        const pnl = (prices.up - position.entryUp) / position.entryUp;
+        logTrade(activeMarketId, position.entryUp, position.entryDown, "UP_EXIT", prices.up, pnl);
         position = null;
         return;
       }
 
-      if (m.down >= PROFIT_EXIT) {
-        const pnl = (PROFIT_EXIT - position.entryDown) / position.entryDown - 1;
-        logTrade(position.entryUp, position.entryDown, "DOWN", m.down, pnl);
-        console.log("PROFIT EXIT DOWN", pnl);
+      if (prices.down >= PROFIT_EXIT) {
+        const pnl = (prices.down - position.entryDown) / position.entryDown;
+        logTrade(activeMarketId, position.entryUp, position.entryDown, "DOWN_EXIT", prices.down, pnl);
         position = null;
         return;
       }
 
-      // TIME STOP
-      if (minutesSince(position.entryTime) >= TIME_STOP_MINUTES) {
-        const loss = -0.05;
-        logTrade(position.entryUp, position.entryDown, "TIME_STOP", 0, loss);
-        console.log("TIME STOP EXIT", loss);
+      if (minutes(Date.now() - position.entryTime) >= TIME_STOP_MIN) {
+        logTrade(activeMarketId, position.entryUp, position.entryDown, "TIME_STOP", 0, -0.05);
         position = null;
         return;
       }
 
-      // FORCE EXIT
-      if (minutesToExpiry(m.expiry) <= FORCE_EXIT_MINUTES) {
-        const loss = -0.05;
-        logTrade(position.entryUp, position.entryDown, "FORCED_EXIT", 0, loss);
-        console.log("FORCED EXPIRY EXIT", loss);
+      if (minutes(activeExpiry - Date.now()) <= FORCE_EXIT_MIN) {
+        logTrade(activeMarketId, position.entryUp, position.entryDown, "FORCED_EXIT", 0, -0.05);
         position = null;
         return;
       }
     }
-  } catch (err) {
-    console.error("ERROR:", err.message);
+
+  } catch (e) {
+    console.error("ERROR:", e.message);
   }
 }
 
@@ -149,5 +176,5 @@ async function botLoop() {
    START
 ===================================================== */
 
-console.log("PAPER BOT STARTED (15-MIN, 24H)");
-setInterval(botLoop, POLL_INTERVAL_MS);
+console.log("PROPER BTC 15-MIN PAPER BOT STARTED");
+setInterval(loop, POLL_MS);
