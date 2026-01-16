@@ -1,9 +1,9 @@
 {
-  "name": "polymarket-bot",
+  "name": "polymarket-15m-paperbot",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node paperbot.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
