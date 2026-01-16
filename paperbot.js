@@ -1,200 +1,77 @@
 import axios from "axios";
 import fs from "fs";
 
-/* =====================================================
-   CONFIG
-===================================================== */
+/* ================= CONFIG ================= */
 
-const RUN_HOURS = 24;
-const POLL_MS = 5000;
+const POLL_MS = 15000; // 15 seconds
+const CSV_FILE = "btc_15m_paper_log.csv";
 
-const ENTRY_LADDERS = [
-  { up: 0.30, down: 0.70 },
-  { up: 0.32, down: 0.68 },
-  { up: 0.35, down: 0.65 }
-];
+/* ================= CSV INIT ================= */
 
-const PROFIT_EXIT = 0.85;
-const TIME_STOP_MIN = 7;
-const FORCE_EXIT_MIN = 2;
+if (!fs.existsSync(CSV_FILE)) {
+  fs.writeFileSync(
+    CSV_FILE,
+    "timestamp,market_id,up_price,down_price,expiry\n"
+  );
+}
 
-/* =====================================================
-   STATE
-===================================================== */
-
-let activeMarketId = null;
-let activeExpiry = null;
-let position = null;
-let startTime = Date.now();
-
-/* =====================================================
-   CSV
-===================================================== */
-
-const CSV = "pnl.csv";
-fs.writeFileSync(
-  CSV,
-  "timestamp,market_id,entry_up,entry_down,exit_reason,exit_price,pnl\n"
-);
-
-/* =====================================================
-   API
-===================================================== */
+/* ================= API ================= */
 
 const api = axios.create({
   baseURL: "https://clob.polymarket.com"
 });
 
-/* =====================================================
-   HELPERS
-===================================================== */
+/* ================= HELPERS ================= */
 
-function minutes(ms) {
-  return ms / 60000;
-}
+async function fetchCurrentBTC15mMarket() {
+  const res = await api.get(
+    "/markets?slug=bitcoin-up-or-down-15-minutes"
+  );
 
-async function fetchActiveBTC15mMarket() {
-  const res = await api.get("/markets");
-  const now = Date.now();
+  // Polymarket returns newest first for slug queries
+  const market = Array.isArray(res.data)
+    ? res.data[0]
+    : res.data?.markets?.[0];
 
-  // ---- NORMALIZE RESPONSE SHAPE ----
-  let marketsRaw = [];
+  if (!market) return null;
 
-  if (Array.isArray(res.data)) {
-    marketsRaw = res.data;
-  } else if (Array.isArray(res.data.markets)) {
-    marketsRaw = res.data.markets;
-  } else if (Array.isArray(res.data.data)) {
-    marketsRaw = res.data.data;
-  } else {
-    console.error("UNKNOWN /markets RESPONSE SHAPE:", Object.keys(res.data));
-    return null;
-  }
-
-  // ---- FILTER BTC 15 MIN MARKETS ----
-  const markets = marketsRaw
-    .filter(m =>
-      m &&
-      m.active === true &&
-      typeof m.question === "string" &&
-      m.question.toLowerCase().includes("bitcoin") &&
-      m.question.includes("15")
-    )
-    .map(m => ({
-      id: m.id,
-      expiry: new Date(m.expiry).getTime()
-    }))
-    .filter(m => !isNaN(m.expiry) && m.expiry > now)
-    .sort((a, b) => a.expiry - b.expiry);
-
-  return markets[0] || null;
-}
-
-
-
-async function getPrices(marketId) {
-  const res = await api.get(`/markets/${marketId}`);
   return {
-    up: parseFloat(res.data.outcomes[0].price),
-    down: parseFloat(res.data.outcomes[1].price),
-    expiry: new Date(res.data.expiry).getTime()
+    id: market.id,
+    up: parseFloat(market.outcomes[0].price),
+    down: parseFloat(market.outcomes[1].price),
+    expiry: market.expiry
   };
 }
 
-function logTrade(marketId, entryUp, entryDown, reason, price, pnl) {
-  fs.appendFileSync(
-    CSV,
-    `${new Date().toISOString()},${marketId},${entryUp},${entryDown},${reason},${price},${pnl.toFixed(4)}\n`
-  );
-}
-
-/* =====================================================
-   CORE LOOP
-===================================================== */
+/* ================= CORE LOOP ================= */
 
 async function loop() {
   try {
-    if (minutes(Date.now() - startTime) >= RUN_HOURS * 60) {
-      console.log("24 HOURS COMPLETE — STOPPING");
-      process.exit(0);
-    }
-
-    const market = await fetchActiveBTC15mMarket();
+    const market = await fetchCurrentBTC15mMarket();
     if (!market) return;
 
-    // MARKET ROLL
-    if (market.id !== activeMarketId) {
-      if (position) {
-        logTrade(
-          activeMarketId,
-          position.entryUp,
-          position.entryDown,
-          "MARKET_ROLL",
-          0,
-          -0.05
-        );
-        position = null;
-      }
-      activeMarketId = market.id;
-      activeExpiry = market.expiry;
-      console.log("NEW MARKET", activeMarketId);
-    }
+    const row = [
+      new Date().toISOString(),
+      market.id,
+      market.up,
+      market.down,
+      market.expiry
+    ].join(",");
 
-    const prices = await getPrices(activeMarketId);
+    fs.appendFileSync(CSV_FILE, row + "\n");
 
-    /* ===== ENTRY ===== */
-    if (!position) {
-      for (const l of ENTRY_LADDERS) {
-        if (prices.up <= l.up && prices.down >= l.down) {
-          position = {
-            entryUp: prices.up,
-            entryDown: prices.down,
-            entryTime: Date.now()
-          };
-          console.log("PAPER ENTRY", position);
-          return;
-        }
-      }
-    }
-
-    /* ===== MANAGEMENT ===== */
-    if (position) {
-      if (prices.up >= PROFIT_EXIT) {
-        const pnl = (prices.up - position.entryUp) / position.entryUp;
-        logTrade(activeMarketId, position.entryUp, position.entryDown, "UP_EXIT", prices.up, pnl);
-        position = null;
-        return;
-      }
-
-      if (prices.down >= PROFIT_EXIT) {
-        const pnl = (prices.down - position.entryDown) / position.entryDown;
-        logTrade(activeMarketId, position.entryUp, position.entryDown, "DOWN_EXIT", prices.down, pnl);
-        position = null;
-        return;
-      }
-
-      if (minutes(Date.now() - position.entryTime) >= TIME_STOP_MIN) {
-        logTrade(activeMarketId, position.entryUp, position.entryDown, "TIME_STOP", 0, -0.05);
-        position = null;
-        return;
-      }
-
-      if (minutes(activeExpiry - Date.now()) <= FORCE_EXIT_MIN) {
-        logTrade(activeMarketId, position.entryUp, position.entryDown, "FORCED_EXIT", 0, -0.05);
-        position = null;
-        return;
-      }
-    }
-
+    console.log(
+      "LOGGED",
+      market.id,
+      "UP:", market.up,
+      "DOWN:", market.down
+    );
   } catch (e) {
     console.error("ERROR:", e.message);
   }
 }
 
-/* =====================================================
-   START
-===================================================== */
+/* ================= START ================= */
 
-console.log("PROPER BTC 15-MIN PAPER BOT STARTED");
+console.log("BTC 15-MIN PAPER LOGGER STARTED");
 setInterval(loop, POLL_MS);
-console.log("MARKETS RESPONSE TYPE:", typeof res.data, Object.keys(res.data || {}));
