@@ -57,11 +57,12 @@ async function fetchActiveBTC15mMarket() {
   const res = await api.get("/markets");
   const now = Date.now();
 
-  const markets = res.data
+  const markets = res.data.markets
     .filter(m =>
-      m.active &&
-      m.question?.toLowerCase().includes("bitcoin") &&
-      m.question?.includes("15")
+      m.active === true &&
+      m.question &&
+      m.question.toLowerCase().includes("bitcoin") &&
+      m.question.includes("15")
     )
     .map(m => ({
       id: m.id,
@@ -72,6 +73,7 @@ async function fetchActiveBTC15mMarket() {
 
   return markets[0] || null;
 }
+
 
 async function getPrices(marketId) {
   const res = await api.get(`/markets/${marketId}`);
