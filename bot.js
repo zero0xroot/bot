@@ -65,6 +65,13 @@ function logTrade(marketId, entryUp, entryDown, reason, price, pnl) {
 }
 
 /* ================= CORE LOOP ================= */
+console.log(
+  "DEBUG",
+  "MARKET:", currentMarketId,
+  "UP:", m.up.toFixed(2),
+  "DOWN:", m.down.toFixed(2),
+  "POSITION:", position ? "YES" : "NO"
+);
 
 async function loop() {
   try {
