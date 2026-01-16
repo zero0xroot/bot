@@ -57,10 +57,26 @@ async function fetchActiveBTC15mMarket() {
   const res = await api.get("/markets");
   const now = Date.now();
 
-  const markets = res.data.markets
+  // ---- NORMALIZE RESPONSE SHAPE ----
+  let marketsRaw = [];
+
+  if (Array.isArray(res.data)) {
+    marketsRaw = res.data;
+  } else if (Array.isArray(res.data.markets)) {
+    marketsRaw = res.data.markets;
+  } else if (Array.isArray(res.data.data)) {
+    marketsRaw = res.data.data;
+  } else {
+    console.error("UNKNOWN /markets RESPONSE SHAPE:", Object.keys(res.data));
+    return null;
+  }
+
+  // ---- FILTER BTC 15 MIN MARKETS ----
+  const markets = marketsRaw
     .filter(m =>
+      m &&
       m.active === true &&
-      m.question &&
+      typeof m.question === "string" &&
       m.question.toLowerCase().includes("bitcoin") &&
       m.question.includes("15")
     )
@@ -68,11 +84,12 @@ async function fetchActiveBTC15mMarket() {
       id: m.id,
       expiry: new Date(m.expiry).getTime()
     }))
-    .filter(m => m.expiry > now)
+    .filter(m => !isNaN(m.expiry) && m.expiry > now)
     .sort((a, b) => a.expiry - b.expiry);
 
   return markets[0] || null;
 }
+
 
 
 async function getPrices(marketId) {
