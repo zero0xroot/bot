@@ -1,12 +1,11 @@
 {
-  "name": "polymarket-15m-paperbot",
+  "name": "polymarket-15m-paper-logger",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node paperbot.js"
+    "start": "node bot.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^16.3.0"
+    "axios": "^1.6.0"
   }
 }
