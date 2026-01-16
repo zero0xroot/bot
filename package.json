@@ -1,5 +1,5 @@
 {
-  "name": "polymarket-15m-paper-logger",
+  "name": "polymarket-15m-paper-strategy",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
