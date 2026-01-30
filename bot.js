@@ -8,8 +8,8 @@
  * * Requirements: npm install axios ethers
  */
 
-const axios = require('axios');
-const { Wallet } = require('ethers');
+import axios from 'axios';
+import { Wallet } from 'ethers';
 
 // --- CONFIGURATION ---
 const CONFIG = {
