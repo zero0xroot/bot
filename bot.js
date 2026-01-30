@@ -5,7 +5,9 @@
  * 2. If range is within 40c-60c, wait for a breakout.
  * 3. Buy if price > High (Target +15c, SL -5c).
  * 4. Sells if price < Low (Target +15c, SL -5c).
- * * Requirements: npm install axios ethers
+ * * FIXING "ERR_MODULE_NOT_FOUND":
+ * Run this command in your terminal: npm install ethers axios
+ * On Render, set your Build Command to: npm install
  */
 
 import axios from 'axios';
